@@ -1,0 +1,24 @@
+// The `skitter` command — a program, not a package.
+//
+// **It is written in sysl, which is the point of it as much as the use of it.** A command-line tool
+// that starts other programs is the thing `sysl.process` was added for, and this is the first
+// program in the org that drives a whole toolchain — git, curl, tar, Gradle, adb — without a line of
+// shell anywhere in it.
+package {
+  name    = "skitter-cli"
+  version = "0.1.0"
+
+  // `sysl.process` arrived in 0.0.78. Nothing here works without it.
+  sysl = "0.0.78"
+}
+
+// Nothing. Everything this needs is in the standard library, which is worth saying out loud: the
+// argument parser, the filesystem, the environment, the text handling and the process control are
+// all `sysl.*`.
+dependencies {}
+
+requires {
+  os    = true
+  heap  = true
+  posix = true
+}

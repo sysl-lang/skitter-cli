@@ -1,0 +1,411 @@
+// `skitter` — starting an Android project written in sysl, and driving it afterwards.
+//
+// **There is no shell in this program.** Every child is started by name with its arguments as a
+// list, so nothing here quotes anything and a path with a space in it is a path. That is
+// `sysl.process`'s doing and it is the reason this could be written in sysl at all: before it, a
+// tool that had to drive git, curl, tar, Gradle and adb could not be a sysl program.
+//
+// ## What it is for
+//
+// Two jobs that look unrelated and are not. `init` writes a project; everything else drives one. The
+// second is what the first exists to make possible, and both are here because the alternative was a
+// page of instructions telling somebody to export two variables and remember a component name.
+
+import sysl.args.{cli, long_option, parse_or_exit, Cli, Parsed}
+import sysl.process.{run, capture, Var, Status, Output}
+import sysl.fs.{read_text, write_text, exists, is_dir, make_dir, remove_file, entries}
+import sysl.env.get
+import sysl.text.{split, join, parse_int, Search}
+import sysl.buf.{Buf, buf}
+
+const VERSION: string = "0.1.0"
+
+// Where a new project is copied from, and at which tag. **Pinned rather than tracking a branch**: a
+// tool that scaffolded from whatever `dev` happened to hold would produce a different project on
+// Tuesday than on Monday, and neither would be reproducible from the version that made it.
+const TEMPLATE: string = "https://github.com/sysl-lang/skitter-app/archive/refs/tags/"
+const TEMPLATE_TAG: string = "v0.1.0"
+
+// Skitter's activity, which is the same class in every project. That is what makes it possible to
+// work out the component name to launch from the application id alone.
+const ACTIVITY: string = "sh.sysl.skitter.SkitterActivity"
+
+// The two lines that are a project's own.
+const ID_KEY: string = "skitter.applicationId"
+const NAME_KEY: string = "skitter.appName"
+
+// ## Saying what went wrong
+
+private die(message: string)
+    eprints("skitter: " + message + "\n")
+    exit(1)
+
+// A child run for its effect, where anything but a clean exit ends the program. The message names
+// what was being attempted rather than repeating the command, because the child has already printed
+// whatever it had to say on the way past.
+private must(what: string, program: string, args: []const string, dir: string = "",
+             env: []const Var = [])
+    run(program, args, dir, env) match
+        Err(e) -> die(what + ": " + program + ": " + e.message())
+
+        Ok(s) ->
+            if !s.ok() then die(what + ": " + program + " " + s"${s}")
+end must
+
+// ## Finding the toolchain
+//
+// **Two environment problems solved rather than documented**, because both report themselves as
+// something else: a JDK newer than 25 fails inside Gradle with a stack trace that never mentions a
+// version, and a missing Android SDK surfaces as a CMake toolchain error.
+
+// The major version a JDK announces, or `None` where the path is not one.
+//
+// `--version` rather than `-version`, and the difference matters here: the old spelling writes to
+// standard error, which `capture` deliberately does not collect. The two-dash form has written to
+// standard output since JDK 9 and every JDK this could accept is newer than that.
+private jdk_major(home: string) -> Option[int]
+    val out = capture(home + "/bin/java", ["--version"]) match
+        Ok(o) -> o
+        Err(_) -> return None
+
+    if !out.status.ok() then return None
+
+    val words = split(split(out.text, "\n")[0], " ")
+
+    if words.len < 2 then return None
+
+    parse_int(split(words[1], ".")[0]) match
+        Ok(n) -> Some(n)
+        Err(_) -> None
+end jdk_major
+
+// Gradle runs on 17 through 25 and on nothing else, which is a fact about Gradle rather than about
+// this project.
+private usable_jdk(home: string) -> bool =
+    jdk_major(home) match
+        Some(n) -> n >= 17 && n <= 25
+        None -> false
+
+// A JDK Gradle will actually start under, or the empty string to leave the environment alone.
+//
+// **Whatever is already set wins if it works**, so somebody who has arranged their own toolchain is
+// not overridden. Only when it is absent or out of range does this go looking.
+private find_jdk() -> string
+    val declared = get("JAVA_HOME").unwrap_or("")
+
+    if declared != "" && usable_jdk(declared) then return declared
+
+    // macOS keeps its JDKs somewhere only this program knows about, and answers which is which.
+    if exists("/usr/libexec/java_home")
+        for v in [25, 24, 23, 22, 21, 20, 19, 18, 17]
+            capture("/usr/libexec/java_home", ["-v", s"${v}"]) match
+                Ok(o) ->
+                    if o.status.ok()
+                        val home = o.text.trim()
+
+                        if usable_jdk(home) then return home
+
+                Err(_) -> ()
+
+    // Nothing found. Better to say nothing than to set `JAVA_HOME` to something that will not work:
+    // an unset variable lets Gradle use whatever `java` is on the path, which may well be right.
+    ""
+end find_jdk
+
+private find_sdk() -> string
+    val declared = get("ANDROID_HOME").unwrap_or(get("ANDROID_SDK_ROOT").unwrap_or(""))
+
+    if declared != "" then return declared
+
+    val home = get("HOME").unwrap_or("")
+
+    for c in [home + "/Library/Android/sdk", home + "/Android/Sdk"]
+        if is_dir(c) then return c
+
+    ""
+end find_sdk
+
+// What every child of this program is given: a JDK it can run under and an SDK it can find. Both are
+// left out where this program could not work one out, so a child sees exactly what this one does.
+private tooling() -> []Var
+    var vs: Buf[Var] = buf()
+    val jdk = find_jdk()
+    val sdk = find_sdk()
+
+    if jdk != "" then vs.push(Var("JAVA_HOME", jdk))
+    if sdk != "" then vs.push(Var("ANDROID_HOME", sdk))
+
+    vs.view()
+end tooling
+
+private adb() -> string
+    val sdk = find_sdk()
+
+    if sdk == "" then die("no Android SDK — set ANDROID_HOME")
+
+    sdk + "/platform-tools/adb"
+
+// ## Reading the project
+//
+// The two names live in `gradle.properties` and nowhere else, which is what makes them readable at
+// all: there is one file to look in and one spelling to look for.
+
+private property(key: string) -> string
+    val text = read_text("gradle.properties") match
+        Ok(t) -> t
+        Err(_) -> die_str("this is not a Skitter project — there is no gradle.properties here")
+
+    for line in split(text, "\n")
+        val l = line.trim()
+
+        if l.starts_with(key + "=")
+            // Split on every `=` and rejoin all but the first field, so a value with one in it
+            // survives -- an application's name is somebody's text and may hold anything.
+            val fields = split(l, "=")
+
+            return join(fields[1..], "=").trim()
+
+    ""
+end property
+
+// `die` that the compiler can see never returns a value, so it can stand in an expression.
+private die_str(message: string) -> string
+    die(message)
+    ""
+
+private application_id() -> string
+    val id = property(ID_KEY)
+
+    if id == "" then die("no " + ID_KEY + " in gradle.properties")
+
+    id
+
+// ## The daily loop
+
+// **SDL3's Android release, which no Skitter project carries.** It is tens of megabytes of binaries
+// built against an NDK and an API level somebody else chose, so the template ships a script that
+// downloads it and a `.gitignore` line that keeps it out. Without this, a first build fails inside
+// Gradle on a message about `app/libs` that is perfectly clear and still makes somebody go and read
+// a README to find out which script to run.
+private have_aar() -> bool
+    entries("app/libs") match
+        Ok(names) ->
+            for n in names.view()
+                if n.ends_with(".aar") then return true
+
+            false
+
+        Err(_) -> false
+end have_aar
+
+private need_aar()
+    if have_aar() then return
+
+    prints("skitter: fetching SDL3's Android release, which happens once\n")
+    must("fetching SDL3", "./fetch-sdl3.sh", [])
+
+private gradle(task: string)
+    if !exists("gradlew") then die("no gradlew here — run this from a Skitter project")
+
+    need_aar()
+    must("building", "./gradlew", [task], "", tooling())
+
+private apk() -> string = "app/build/outputs/apk/debug/app-debug.apk"
+
+private require_device()
+    val out = capture(adb(), ["devices"]) match
+        Ok(o) -> o
+        Err(e) -> die_out("adb: " + e.message())
+
+    var seen = false
+
+    // The first line is a header; a device shows as a serial and the word `device`, where one still
+    // booting shows `offline` and one that needs a fingerprint shows `unauthorized`.
+    for line in split(out.text, "\n")
+        if line.contains("\tdevice") then seen = true
+
+    if !seen
+        die("no device or emulator is attached — start one, or check 'adb devices'")
+end require_device
+
+private die_out(message: string) -> Output
+    die(message)
+    Output(Status.Exited(1), "")
+
+private install()
+    if !exists(apk()) then die("nothing built yet — try 'skitter build'")
+
+    require_device()
+    must("installing", adb(), ["install", "-r", apk()])
+
+// What this program's own output is filtered to. `SDL/APP` is where a sysl `print` lands on Android,
+// since SDL redirects the standard streams into the log; `skitter` is the activity's own tag.
+private log_spec() -> []string =
+    ["logcat", "-s", "SDL/APP:V", "SDL:W", "skitter:V", "AndroidRuntime:E", "DEBUG:E"]
+
+private follow_log()
+    require_device()
+    must("following the log", adb(), log_spec())
+
+private launch()
+    val component = application_id() + "/" + ACTIVITY
+
+    // Cleared before launching, so that what follows is this run rather than the last one.
+    must("clearing the log", adb(), ["logcat", "-c"])
+    must("starting", adb(), ["shell", "am", "start", "-n", component])
+
+    prints("\n── " + application_id() + " ── ^C to stop following the log ──\n\n")
+    follow_log()
+end launch
+
+// ## Starting a project
+
+// The template, fetched and unpacked. **A tarball rather than a clone**, so that a new project has
+// no git history but its own — a clone would arrive carrying somebody else's commits and a remote
+// pointing at the template, which is the thing everybody has to remember to undo.
+private fetch_template(dir: string)
+    val tmp = "/tmp/skitter-template-" + TEMPLATE_TAG + ".tar.gz"
+    val url = TEMPLATE + TEMPLATE_TAG + ".tar.gz"
+
+    if !exists(tmp)
+        must("downloading the template", "curl", ["-fsSL", "-o", tmp, url])
+
+    make_dir(dir) match
+        Err(e) -> die("could not make " + dir + ": " + e.message())
+        Ok(_) -> ()
+
+    // `--strip-components=1` because the archive is rooted at `skitter-app-<version>/`, which is
+    // GitHub's name for it rather than anything the project should be called.
+    must("unpacking the template", "tar", ["xzf", tmp, "-C", dir, "--strip-components=1"])
+end fetch_template
+
+// The two lines rewritten in place, and every other line left exactly as it was — comments included,
+// since `gradle.properties` explains itself to whoever opens it next.
+private write_names(dir: string, id: string, name: string)
+    val path = dir + "/gradle.properties"
+
+    val text = read_text(path) match
+        Ok(t) -> t
+        Err(e) -> die_str("the template has no gradle.properties: " + e.message())
+
+    var out: Buf[string] = buf()
+
+    for line in split(text, "\n")
+        if line.starts_with(ID_KEY + "=")
+            out.push(ID_KEY + "=" + id)
+        elif line.starts_with(NAME_KEY + "=")
+            out.push(NAME_KEY + "=" + name)
+        else
+            out.push(line)
+
+    write_text(path, join(out.view(), "\n")) match
+        Err(e) -> die("could not write " + path + ": " + e.message())
+        Ok(_) -> ()
+end write_names
+
+// What the template says about itself is about Skitter; what a new project's README should say is
+// about the project. Replacing it is the difference between a scaffold and a fork.
+private write_readme(dir: string, name: string)
+    val body = "# " + name + "\n\n" +
+        "An Android application written in sysl, started from " +
+        "[Skitter](https://github.com/sysl-lang/skitter).\n\n" +
+        "```\nskitter run\n```\n\n" +
+        "builds it, installs it, launches it and follows the log.\n\n" +
+        "`program/main.sysl` is your program. The two names this project is known by are in\n" +
+        "`gradle.properties`, and nothing else in the repository is named for it.\n"
+
+    write_text(dir + "/README.md", body) match
+        Err(e) -> die("could not write the README: " + e.message())
+        Ok(_) -> ()
+
+    // The template's screenshot is of the template's demo, so it goes with the template's README.
+    remove_file(dir + "/shot.png")
+end write_readme
+
+private git_init(dir: string)
+    // A project that is not a repository is still a project, so a machine without git gets a warning
+    // rather than a failure — everything above this point has already succeeded.
+    run("git", ["init", "-q"], dir) match
+        Err(_) ->
+            prints("skitter: no git here, so the project is not a repository yet\n")
+            return
+
+        Ok(s) -> if !s.ok() then return
+
+    run("git", ["add", "-A"], dir)
+    run("git", ["commit", "-q", "-m", "A Skitter application"], dir)
+end git_init
+
+private init(dir: string, id: string, name: string)
+    if dir == "" then die("say what to call the project: skitter init <directory>")
+
+    if exists(dir) then die(dir + " already exists")
+
+    if !id.contains(".") then die("an application id needs a dot in it, like com.example." + dir)
+
+    fetch_template(dir)
+    write_names(dir, id, name)
+    write_readme(dir, name)
+    git_init(dir)
+
+    prints("\n" + name + " is ready in " + dir + "\n\n")
+    prints("    cd " + dir + "\n")
+    prints("    skitter run\n\n")
+    prints("Your program is " + dir + "/program/main.sysl.\n")
+end init
+
+// ## The command line
+
+private usage() -> string =
+    "skitter — an Android application written in sysl\n\n" +
+    "    skitter init <dir> [--id <application-id>] [--name <app-name>]\n" +
+    "    skitter build      the debug APK\n" +
+    "    skitter run        build, install, launch, follow the log\n" +
+    "    skitter install    install what was last built\n" +
+    "    skitter log        follow a running application's output\n" +
+    "    skitter release    a release APK, signed if you have a key\n" +
+    "    skitter clean      Gradle's output and sbt's\n"
+
+main(args: []string)
+    val id_opt = long_option("id", "application-id", "the id Android knows the app by")
+    val name_opt = long_option("name", "app-name", "what appears under the icon")
+
+    val spec = cli("skitter", [id_opt, name_opt],
+                   about = "an Android application written in sysl",
+                   version = VERSION,
+                   operands = "<command> [<directory>]")
+
+    val p = parse_or_exit(spec, args)
+
+    if p.positionals.len == 0
+        prints(usage())
+        exit(2)
+
+    val command = p.positionals[0]
+    val operand = if p.positionals.len > 1 then p.positionals[1] else ""
+
+    command match
+        "init" ->
+            val name = p.value_or(name_opt, operand)
+
+            init(operand, p.value_or(id_opt, "com.example." + operand), name)
+
+        "build" -> gradle("assembleDebug")
+        "release" -> gradle("assembleRelease")
+        "install" -> install()
+        "log" -> follow_log()
+
+        "run" ->
+            gradle("assembleDebug")
+            install()
+            launch()
+
+        "clean" ->
+            gradle("clean")
+            prints("skitter: cleaned\n")
+
+        _ ->
+            eprints("skitter: no such command: " + command + "\n\n")
+            eprints(usage())
+            exit(2)
+end main

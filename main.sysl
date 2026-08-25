@@ -306,13 +306,21 @@ end write_names
 // What the template says about itself is about Skitter; what a new project's README should say is
 // about the project. Replacing it is the difference between a scaffold and a fork.
 private write_readme(dir: string, name: string)
-    val body = "# " + name + "\n\n" +
-        "An Android application written in sysl, started from " +
-        "[Skitter](https://github.com/sysl-lang/skitter).\n\n" +
-        "```\nskitter run\n```\n\n" +
-        "builds it, installs it, launches it and follows the log.\n\n" +
-        "`program/main.sysl` is your program. The two names this project is known by are in\n" +
-        "`gradle.properties`, and nothing else in the repository is named for it.\n"
+    val body = s"""
+    # ${name}
+
+    An Android application written in sysl, started from
+    [Skitter](https://github.com/sysl-lang/skitter).
+
+    ```
+    skitter run
+    ```
+
+    builds it, installs it, launches it and follows the log.
+
+    `program/main.sysl` is your program. The two names this project is known by are in
+    `gradle.properties`, and nothing else in the repository is named for it.
+    """
 
     write_text(dir + "/README.md", body) match
         Err(e) -> die("could not write the README: " + e.message())
@@ -357,14 +365,17 @@ end init
 // ## The command line
 
 private usage() -> string =
-    "skitter — an Android application written in sysl\n\n" +
-    "    skitter init <dir> [--id <application-id>] [--name <app-name>]\n" +
-    "    skitter build      the debug APK\n" +
-    "    skitter run        build, install, launch, follow the log\n" +
-    "    skitter install    install what was last built\n" +
-    "    skitter log        follow a running application's output\n" +
-    "    skitter release    a release APK, signed if you have a key\n" +
-    "    skitter clean      Gradle's output and sbt's\n"
+    """
+    skitter — an Android application written in sysl
+
+        skitter init <dir> [--id <application-id>] [--name <app-name>]
+        skitter build      the debug APK
+        skitter run        build, install, launch, follow the log
+        skitter install    install what was last built
+        skitter log        follow a running application's output
+        skitter release    a release APK, signed if you have a key
+        skitter clean      Gradle's output and sbt's
+    """
 
 main(args: []string)
     val id_opt = long_option("id", "application-id", "the id Android knows the app by")

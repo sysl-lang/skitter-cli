@@ -13,7 +13,8 @@
 
 import sysl.args.{cli, long_option, parse_or_exit, Cli, Parsed}
 import sysl.process.{run, capture, Var, Status, Output}
-import sysl.fs.{read_text, write_text, exists, is_dir, make_dir, remove_file, entries}
+import sysl.fs.{read_text, write_text, exists, is_dir, make_dir, remove_file,
+                remove_dir, rename, entries}
 import sysl.env.get
 import sysl.text.{split, join, parse_int, Search}
 import sysl.buf.{Buf, buf}
@@ -258,6 +259,67 @@ private launch()
     follow_log()
 end launch
 
+// ## Throwing the build output away
+
+/** A directory and everything under it, depth-first.
+ *
+ * **Not in `sysl.fs`, on purpose** — that module's own tests say a tree removal is a thing to design
+ * rather than a thing to need, because it has to answer for symlinks, for a directory it cannot
+ * descend into, and for how far it should go. This one answers those narrowly and says so: it is
+ * pointed at two paths whose shape this program knows, both of them build output, and it gives up
+ * quietly on anything it cannot read rather than trying harder.
+ *
+ * **`is_dir` follows a symlink, so a link to a directory would be descended into.** Nothing puts one
+ * in the two trees below, and `remove_file` unlinks rather than following — but that is the edge a
+ * general version would have to answer and this one does not.
+ */
+private remove_tree(path: string)
+    if !is_dir(path) then return
+
+    entries(path) match
+        Ok(names) ->
+            for name in names.view()
+                val child = path + "/" + name
+
+                if is_dir(child) then remove_tree(child) else remove_file(child)
+
+        Err(_) -> return
+
+    remove_dir(path)
+end remove_tree
+
+/** What `sysl build-c` leaves beside a program: the archive CMake links and its C header. */
+private remove_artifacts(dir: string)
+    entries(dir) match
+        Ok(names) ->
+            for name in names.view()
+                if name.ends_with(".a") || name.ends_with(".a.h")
+                    remove_file(dir + "/" + name)
+
+        Err(_) -> ()
+end remove_artifacts
+
+/** Everything a build wrote, whether or not Gradle is in a state to help.
+ *
+ * **`gradlew clean` is best effort and deliberately not fatal.** It is the command somebody reaches
+ * for when the build is already broken, and one that refuses *because* things are broken is useless
+ * exactly when it is wanted — a daemon holding a lock, a half-written output directory, a CMake
+ * cache pointing at an NDK that is no longer there. Whatever it manages is a bonus; the removals
+ * below are what actually gets the tree back to nothing.
+ */
+private clean()
+    if exists("gradlew") then run("./gradlew", ["clean"], "", tooling())
+
+    remove_tree("app/.cxx")
+    remove_tree("app/build")
+    remove_tree("activity/target")
+    remove_artifacts("program")
+
+    // The AAR is kept: it is tens of megabytes, it is the same bytes every time, and re-downloading
+    // it is the slowest part of the next build. `rm -rf app/libs` is there for anyone who disagrees.
+    prints("skitter: cleaned — the SDL3 AAR in app/libs is kept\n")
+end clean
+
 // ## Starting a project
 
 // The template, fetched and unpacked. **A tarball rather than a clone**, so that a new project has
@@ -267,8 +329,18 @@ private fetch_template(dir: string)
     val tmp = "/tmp/skitter-template-" + TEMPLATE_TAG + ".tar.gz"
     val url = TEMPLATE + TEMPLATE_TAG + ".tar.gz"
 
+    // **Downloaded beside its final name and moved into place**, so that a partial file can never be
+    // mistaken for a cached one. `curl` interrupted halfway leaves what it had written, and a plain
+    // `-o tmp` would make every later `init` skip the download and fail at `tar` instead — with a
+    // message about the archive rather than about the download that did not finish.
     if !exists(tmp)
-        must("downloading the template", "curl", ["-fsSL", "-o", tmp, url])
+        val part = tmp + ".part"
+
+        must("downloading the template", "curl", ["-fsSL", "-o", part, url])
+
+        rename(part, tmp) match
+            Err(e) -> die("could not put the template where it belongs: " + e.message())
+            Ok(_) -> ()
 
     make_dir(dir) match
         Err(e) -> die("could not make " + dir + ": " + e.message())
@@ -411,9 +483,7 @@ main(args: []string)
             install()
             launch()
 
-        "clean" ->
-            gradle("clean")
-            prints("skitter: cleaned\n")
+        "clean" -> clean()
 
         _ ->
             eprints("skitter: no such command: " + command + "\n\n")

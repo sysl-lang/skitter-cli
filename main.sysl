@@ -229,9 +229,11 @@ private require_device()
         die("no device or emulator is attached — start one, or check 'adb devices'")
 end require_device
 
+// `die` never returns, so this exists only to give the function a value of the right type. The
+// `None` is `Output.err`, which sysl 0.0.88 added: not collected, as against collected and empty.
 private die_out(message: string) -> Output
     die(message)
-    Output(Status.Exited(1), "")
+    Output(Status.Exited(1), "", None)
 
 private install()
     if !exists(apk()) then die("nothing built yet — try 'skitter build'")

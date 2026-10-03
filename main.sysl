@@ -26,7 +26,7 @@ import sysl.buf.{Buf, buf}
 // tool that scaffolded from whatever `dev` happened to hold would produce a different project on
 // Tuesday than on Monday, and neither would be reproducible from the version that made it.
 const TEMPLATE: string = "https://github.com/sysl-lang/skitter-app/archive/refs/tags/"
-const TEMPLATE_TAG: string = "v0.2.3"
+const TEMPLATE_TAG: string = "v0.3.0"
 
 // Skitter's activity, which is the same class in every project. That is what makes it possible to
 // work out the component name to launch from the application id alone.

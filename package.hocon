@@ -6,7 +6,7 @@
 // shell anywhere in it.
 package {
   name    = "skitter-cli"
-  version = "0.1.1"
+  version = "0.1.2"
 
   // `sysl.process` arrived in 0.0.78. Nothing here works without it.
   sysl = "0.0.78"

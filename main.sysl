@@ -19,13 +19,13 @@ import sysl.env.get
 import sysl.text.{split, join, parse_int, Search}
 import sysl.buf.{Buf, buf}
 
-const VERSION: string = "0.1.1"
+const VERSION: string = "0.1.2"
 
 // Where a new project is copied from, and at which tag. **Pinned rather than tracking a branch**: a
 // tool that scaffolded from whatever `dev` happened to hold would produce a different project on
 // Tuesday than on Monday, and neither would be reproducible from the version that made it.
 const TEMPLATE: string = "https://github.com/sysl-lang/skitter-app/archive/refs/tags/"
-const TEMPLATE_TAG: string = "v0.2.1"
+const TEMPLATE_TAG: string = "v0.2.2"
 
 // Skitter's activity, which is the same class in every project. That is what makes it possible to
 // work out the component name to launch from the application id alone.

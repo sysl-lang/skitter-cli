@@ -14,7 +14,10 @@
 import sysl.args.{cli, long_option, parse_or_exit, Cli, Parsed}
 import sysl.process.{run, capture, Var, Status, Output}
 import sysl.fs.{read_text, write_text, exists, is_dir, make_dir, remove_file,
-                remove_dir, rename, entries}
+                remove_dir, rename, entries, make_dir_all, set_permissions}
+import sysl.path.parent
+import sysl.posix.rand.entropy_from_os
+import sysl.encoding.hex_string
 import sysl.env.get
 import sysl.text.{split, join, parse_int, Search}
 import sysl.buf.{Buf, buf}
@@ -154,6 +157,12 @@ private property(key: string) -> string
         Ok(t) -> t
         Err(_) -> die_str("this is not a Skitter project — there is no gradle.properties here")
 
+    value_of(text, key)
+
+/** The value `key=` sets in a properties file's text, or `""` where no line sets it. The signing
+ * file is read the same way, being the same format.
+ */
+value_of(text: string, key: string) -> string
     for line in split(text, "\n")
         val l = line.trim()
 
@@ -165,7 +174,7 @@ private property(key: string) -> string
             return join(fields[1..], "=").trim()
 
     ""
-end property
+end value_of
 
 // `die` that the compiler can see never returns a value, so it can stand in an expression.
 private die_str(message: string) -> string
@@ -203,11 +212,11 @@ private need_aar()
     prints("skitter: fetching SDL3's Android release, which happens once\n")
     must("fetching SDL3", "./fetch-sdl3.sh", [])
 
-private gradle(task: string)
+private gradle(tasks: []const string)
     if !exists("gradlew") then die("no gradlew here — run this from a Skitter project")
 
     need_aar()
-    must("building", "./gradlew", [task], "", tooling())
+    must("building", "./gradlew", tasks, "", tooling())
 
 private apk() -> string = "app/build/outputs/apk/debug/app-debug.apk"
 
@@ -258,6 +267,161 @@ private launch()
     prints("\n── " + application_id() + " ── ^C to stop following the log ──\n\n")
     follow_log()
 end launch
+
+// ## Shipping
+//
+// **`release` builds the APK and the bundle together**, because they are the same release: the APK
+// is what you install by hand to check it, the bundle is what Play takes, and both come out of one
+// native build — so asking for them separately would only be a second command to forget before an
+// upload. Packaging the second costs seconds.
+
+/** The file a release key is described in: `named` where it is set, and otherwise
+ * `~/.android/sysl-signing.properties`. The template's Gradle build makes the same choice from the
+ * same variable, `SYSL_SIGNING_PROPERTIES`, so the key `keygen` writes is the key a build reads.
+ */
+signing_file(named: string, home: string) -> string =
+    if named != "" then named else home + "/.android/sysl-signing.properties"
+
+private signing_file_here() -> string =
+    signing_file(get("SYSL_SIGNING_PROPERTIES").unwrap_or(""), get("HOME").unwrap_or(""))
+
+/** The keystore `keygen` makes, beside the file that describes it, so one directory is the whole
+ * key and one backup keeps it.
+ */
+keystore_for(props: string) -> string =
+    parent(props) match
+        Some(dir) -> dir + "/sysl-release.jks"
+        None -> "sysl-release.jks"
+
+/** Why `keygen` will not make a key, or `None` where it may.
+ *
+ * **It never replaces one.** Play ties a listing to its upload key, so a key written over is an app
+ * that can no longer be updated — and a keystore with no properties file is somebody's key whose
+ * description was lost, which is no less a key.
+ */
+keygen_refusal(props: string, store: string) -> Option[string]
+    if exists(props)
+        return Some(props + " already exists, so there is a key already — this will not replace it. " +
+                    "Set SYSL_SIGNING_PROPERTIES to make a second one somewhere else")
+
+    if exists(store)
+        return Some(store + " already exists, and it may be the only copy of a key — this will not " +
+                    "replace it")
+
+    None
+end keygen_refusal
+
+private keygen()
+    val props = signing_file_here()
+    val store = keystore_for(props)
+
+    keygen_refusal(props, store) match
+        Some(why) -> die(why)
+        None -> ()
+
+    val jdk = find_jdk()
+
+    if jdk == "" then die("no JDK found, and keytool comes with one — set JAVA_HOME")
+
+    parent(props) match
+        Some(dir) ->
+            make_dir_all(dir) match
+                Err(e) -> die("could not make " + dir + ": " + e.message())
+                Ok(_) -> ()
+
+        None -> ()
+
+    // **A password nobody chose and nobody types.** The properties file holds it in the clear
+    // whatever it is, so a memorable one buys nothing but guessability; 24 bytes of the kernel's
+    // entropy, as hex, is a password that cannot be guessed and survives any properties parser.
+    var noise: [24]u8 = [0; 24]
+
+    if !entropy_from_os(noise[..]) then die("the system would not supply the randomness a password needs")
+
+    val password = hex_string(noise[..])
+    val user = get("USER").unwrap_or("skitter")
+
+    // Handed to keytool through its environment rather than its arguments, which any `ps` can read.
+    must("making the key", jdk + "/bin/keytool",
+         ["-genkeypair", "-keystore", store, "-storetype", "PKCS12", "-alias", "upload",
+          "-keyalg", "RSA", "-keysize", "4096", "-validity", "10000", "-dname", "CN=" + user,
+          "-storepass:env", "SKITTER_KEY_PASSWORD", "-keypass:env", "SKITTER_KEY_PASSWORD"],
+         "", [Var("SKITTER_KEY_PASSWORD", password)])
+
+    val body = "SYSL_KEYSTORE=" + store + "\nSYSL_KEYSTORE_PASSWORD=" + password + "\nSYSL_KEY_ALIAS=upload\n"
+
+    write_text(props, body) match
+        Err(e) -> die("the key is made, but " + props + " could not be written: " + e.message())
+        Ok(_) -> ()
+
+    set_permissions(props, 0o600)
+    set_permissions(store, 0o600)
+
+    prints("skitter: a release key is in " + store + ",\n")
+    prints("         described by " + props + ".\n\n")
+    prints("Back BOTH up somewhere that is not this machine. Play ties your listing to this key: lose it\n")
+    prints("and you can no longer publish updates to the app. Keep it private, too: whoever has it can\n")
+    prints("sign as you.\n")
+end keygen
+
+/** A field of AGP's `output-metadata.json` — a string's contents or a number's digits — or `""`
+ * where it has none. The file is flat enough that a field is found by its name.
+ */
+metadata_field(json: string, key: string) -> string
+    val at = json.index_of("\"" + key + "\"") match
+        Some(i) -> i + key.len + 2
+        None -> return ""
+
+    val rest = json[at..<json.len]
+
+    val colon = rest.index_of_byte(u8(':')) match
+        Some(i) -> i + 1
+        None -> return ""
+
+    val value = rest[colon..<rest.len].trim_start()
+
+    if value.starts_with("\"")
+        return value.index_of_byte_from(u8('"'), 1) match
+            Some(close) -> value[1..<close]
+            None -> ""
+
+    var end: usize = 0
+
+    while end < value.len && value.bytes[end] != u8(',') && value.bytes[end] != u8('\n') && value.bytes[end] != u8('}')
+        end += 1
+
+    value[0..<end].trim()
+end metadata_field
+
+private release()
+    gradle(["assembleRelease", "bundleRelease"])
+
+    // **What was built is read from what AGP wrote about it**, rather than worked out again here:
+    // the version and its code come from `program/package.hocon` through the Gradle build, and the
+    // APK's name is how AGP says whether it signed it.
+    val dir = "app/build/outputs/apk/release"
+
+    val meta = read_text(dir + "/output-metadata.json") match
+        Ok(t) -> t
+        Err(_) -> die_str("the build finished but left no " + dir + "/output-metadata.json")
+
+    val apk_file = metadata_field(meta, "outputFile")
+    val signed = !apk_file.contains("unsigned")
+
+    prints("\nskitter: release " + metadata_field(meta, "versionName") +
+           ", versionCode " + metadata_field(meta, "versionCode") + "\n\n")
+    prints("    APK     " + dir + "/" + apk_file + "    to install by hand\n")
+    prints("    bundle  app/build/outputs/bundle/release/app-release.aab    to upload to Play\n\n")
+
+    if signed
+        val props = signing_file_here()
+        val text = read_text(props).unwrap_or("")
+
+        prints("Both are signed with " + value_of(text, "SYSL_KEYSTORE") + ".\n")
+    else
+        prints("Both are UNSIGNED: Play will refuse the bundle and Android the APK. 'skitter keygen'\n")
+        prints("makes a key, once.\n")
+end release
 
 // ## Throwing the build output away
 
@@ -445,7 +609,8 @@ private usage() -> string =
         skitter run        build, install, launch, follow the log
         skitter install    install what was last built
         skitter log        follow a running application's output
-        skitter release    a release APK, signed if you have a key
+        skitter release    the release APK and the Play bundle, signed if you have a key
+        skitter keygen     make the release key, once
         skitter clean      Gradle's output and sbt's
     """
 
@@ -473,13 +638,14 @@ main(args: []string)
 
             init(operand, p.value_or(id_opt, "com.example." + operand), name)
 
-        "build" -> gradle("assembleDebug")
-        "release" -> gradle("assembleRelease")
+        "build" -> gradle(["assembleDebug"])
+        "release" -> release()
+        "keygen" -> keygen()
         "install" -> install()
         "log" -> follow_log()
 
         "run" ->
-            gradle("assembleDebug")
+            gradle(["assembleDebug"])
             install()
             launch()
 

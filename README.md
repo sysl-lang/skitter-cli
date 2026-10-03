@@ -34,8 +34,33 @@ is a name.
 | `skitter build` | just the debug APK |
 | `skitter install` | install what was last built |
 | `skitter log` | follow a running application's output |
-| `skitter release` | a release APK, signed if you have a key |
+| `skitter release` | the release APK and the Play bundle, signed if you have a key |
+| `skitter keygen` | make the release key, once |
 | `skitter clean` | Gradle's output and sbt's |
+
+## Publishing to Play
+
+```
+skitter keygen
+skitter release
+```
+
+`keygen` makes an upload key in `~/.android/sysl-release.jks`, with a random password, and writes
+`~/.android/sysl-signing.properties`, which is where the project's build looks for it. It refuses to
+replace either file. **Back both up off the machine**: Play ties your listing to this key, and losing
+it means you can no longer publish updates. `SYSL_SIGNING_PROPERTIES` names a different properties
+file, for both `keygen` and the build. keytool is taken from the same JDK the build runs under.
+
+`release` builds the APK and the bundle in one Gradle run, because they are one release. The APK is
+for installing by hand and checking; the `.aab` is what Play takes. It then prints both paths, whether
+they are signed, the version, and the `versionCode`. The version is `version` in
+`program/package.hocon`, and the code is `MAJOR × 1000000 + MINOR × 1000 + PATCH`. Play refuses a
+code that has not gone up, so bump the version before each upload.
+
+The bundle holds `arm64-v8a`, which is the ABI Play requires from apps with native code, and Play
+accepts a bundle with nothing else. Play also has a floor on the target API level, which rises every
+August. The template targets 36, which meets it as of 2026. See the project's README, § Publishing
+to Play.
 
 ## What `init` actually does
 

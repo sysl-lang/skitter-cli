@@ -1,6 +1,6 @@
 @tests
 
-import sysl.fs.read_text
+import sysl.fs.{read_text, write_text, make_temp_dir, remove_dir_all}
 import sysl.text.Search
 
 // `--version` prints `__VERSION__`, so what must hold is that it names the manifest's own version:
@@ -11,3 +11,71 @@ version_is_the_manifests()
     read_text("package.hocon") match
         Ok(manifest) -> assert(manifest.contains("version = \"" + __VERSION__ + "\""))
         Err(_) -> assert(false)
+
+// ## The release key
+
+@test("the signing file is ~/.android's unless SYSL_SIGNING_PROPERTIES names another")
+signing_file_default_and_override()
+    assert(signing_file("", "/Users/x") == "/Users/x/.android/sysl-signing.properties")
+    assert(signing_file("/tmp/k/s.properties", "/Users/x") == "/tmp/k/s.properties")
+
+@test("the keystore sits beside the file that describes it")
+keystore_beside_its_properties()
+    assert(keystore_for("/Users/x/.android/sysl-signing.properties") == "/Users/x/.android/sysl-release.jks")
+    assert(keystore_for("s.properties") == "sysl-release.jks")
+
+@test("keygen refuses to replace an existing properties file or keystore, and goes ahead where neither is there")
+keygen_never_overwrites()
+    val dir = make_temp_dir("skitter-keygen").unwrap()
+    val props = dir + "/sysl-signing.properties"
+    val store = keystore_for(props)
+
+    assert(keygen_refusal(props, store).is_none())
+
+    write_text(store, "a key").unwrap()
+
+    keygen_refusal(props, store) match
+        Some(why) -> assert(why.contains(store))
+        None -> assert(false)
+
+    write_text(props, "SYSL_KEYSTORE=" + store + "\n").unwrap()
+
+    keygen_refusal(props, store) match
+        Some(why) -> assert(why.contains(props) && why.contains("SYSL_SIGNING_PROPERTIES"))
+        None -> assert(false)
+
+    remove_dir_all(dir).unwrap()
+end keygen_never_overwrites
+
+@test("a properties value is read by its key, keeps an '=' inside it, and is empty where absent")
+value_of_reads_properties()
+    val text = "# a comment\nSYSL_KEYSTORE=/k/a=b.jks\n  SYSL_KEY_ALIAS=upload \n"
+
+    assert(value_of(text, "SYSL_KEYSTORE") == "/k/a=b.jks")
+    assert(value_of(text, "SYSL_KEY_ALIAS") == "upload")
+    assert(value_of(text, "SYSL_KEYSTORE_PASSWORD") == "")
+
+// ## What a release build says about itself
+
+@test("output-metadata.json's fields are read as strings and numbers")
+metadata_fields()
+    val json = """
+    {
+      "version": 3,
+      "elements": [
+        {
+          "type": "SINGLE",
+          "versionCode": 1002003,
+          "versionName": "1.2.3",
+          "outputFile": "app-release-unsigned.apk"
+        }
+      ],
+      "elementType": "File"
+    }
+    """
+
+    assert(metadata_field(json, "versionCode") == "1002003")
+    assert(metadata_field(json, "versionName") == "1.2.3")
+    assert(metadata_field(json, "outputFile") == "app-release-unsigned.apk")
+    assert(metadata_field(json, "minSdkVersionForDexing") == "")
+end metadata_fields

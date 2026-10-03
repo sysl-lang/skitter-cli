@@ -19,8 +19,6 @@ import sysl.env.get
 import sysl.text.{split, join, parse_int, Search}
 import sysl.buf.{Buf, buf}
 
-const VERSION: string = "0.1.2"
-
 // Where a new project is copied from, and at which tag. **Pinned rather than tracking a branch**: a
 // tool that scaffolded from whatever `dev` happened to hold would produce a different project on
 // Tuesday than on Monday, and neither would be reproducible from the version that made it.
@@ -457,7 +455,7 @@ main(args: []string)
 
     val spec = cli("skitter", [id_opt, name_opt],
                    about = "an Android application written in sysl",
-                   version = VERSION,
+                   version = __VERSION__,
                    operands = "<command> [<directory>]")
 
     val p = parse_or_exit(spec, args)

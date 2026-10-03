@@ -1,0 +1,13 @@
+@tests
+
+import sysl.fs.read_text
+import sysl.text.Search
+
+// `--version` prints `__VERSION__`, so what must hold is that it names the manifest's own version:
+// the one place the number lives.
+
+@test("__VERSION__ is the version package.hocon declares")
+version_is_the_manifests()
+    read_text("package.hocon") match
+        Ok(manifest) -> assert(manifest.contains("version = \"" + __VERSION__ + "\""))
+        Err(_) -> assert(false)

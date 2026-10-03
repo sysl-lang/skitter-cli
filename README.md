@@ -43,7 +43,9 @@ A **tarball**, not a clone. `sysl-lang/skitter-app` is fetched at a pinned tag a
 project has no git history but its own — a clone would arrive carrying somebody else's commits and a
 remote pointing at the template, which is the thing everyone has to remember to undo.
 
-Then the two lines in `gradle.properties` are rewritten, the template's README and screenshot are
+Then the two identity lines in `gradle.properties` (`skitter.applicationId`, `skitter.appName`) are
+rewritten — the template's other settings, such as `skitter.sdlLibraries` and `skitter.permissions`,
+are left at their defaults — the template's README and screenshot are
 replaced with one about *your* project, and `git init` plus one commit leaves you somewhere sensible
 to start from.
 

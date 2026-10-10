@@ -130,7 +130,7 @@ end find_sdk
 // What every child of this program is given: a JDK it can run under and an SDK it can find. Both are
 // left out where this program could not work one out, so a child sees exactly what this one does.
 private tooling() -> []Var
-    var vs: Buf[Var] = buf()
+    val vs: Buf[Var] = buf()
     val jdk = find_jdk()
     val sdk = find_sdk()
 
@@ -524,7 +524,7 @@ private write_names(dir: string, id: string, name: string)
         Ok(t) -> t
         Err(e) -> die_str("the template has no gradle.properties: " + e.message())
 
-    var out: Buf[string] = buf()
+    val out: Buf[string] = buf()
 
     for line in split(text, "\n")
         if line.starts_with(ID_KEY + "=")

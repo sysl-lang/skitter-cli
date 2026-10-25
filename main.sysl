@@ -397,7 +397,7 @@ private release()
     gradle(["assembleRelease", "bundleRelease"])
 
     // **What was built is read from what AGP wrote about it**, rather than worked out again here:
-    // the version and its code come from `program/package.hocon` through the Gradle build, and the
+    // the version and its code come from `program/sysl.hocon` through the Gradle build, and the
     // APK's name is how AGP says whether it signed it.
     val dir = "app/build/outputs/apk/release"
 

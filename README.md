@@ -54,7 +54,7 @@ file, for both `keygen` and the build. keytool is taken from the same JDK the bu
 `release` builds the APK and the bundle in one Gradle run, because they are one release. The APK is
 for installing by hand and checking; the `.aab` is what Play takes. It then prints both paths, whether
 they are signed, the version, and the `versionCode`. The version is `version` in
-`program/package.hocon`, and the code is `MAJOR × 1000000 + MINOR × 1000 + PATCH`. Play refuses a
+`program/sysl.hocon`, and the code is `MAJOR × 1000000 + MINOR × 1000 + PATCH`. Play refuses a
 code that has not gone up, so bump the version before each upload.
 
 The bundle holds `arm64-v8a`, which is the ABI Play requires from apps with native code, and Play

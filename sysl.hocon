@@ -6,11 +6,11 @@
 // shell anywhere in it.
 package {
   name    = "skitter-cli"
-  version = "0.2.3"
+  version = "0.2.4"
 
   // `__VERSION__` arrived in 0.0.160, and `--version` reads it so this file is the one place the
-  // version lives. `sysl.process` arrived in 0.0.78.
-  sysl = "0.6.0"
+  // version lives. `sysl.process` arrived in 0.0.78. 0.13.0 is the release this is built on.
+  sysl = "0.13.0"
 }
 
 // Nothing. Everything this needs is in the standard library, which is worth saying out loud: the

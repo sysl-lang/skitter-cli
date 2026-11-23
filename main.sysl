@@ -26,7 +26,7 @@ import sysl.buf.{Buf, buf}
 // tool that scaffolded from whatever `dev` happened to hold would produce a different project on
 // Tuesday than on Monday, and neither would be reproducible from the version that made it.
 const TEMPLATE: string = "https://github.com/sysl-lang/skitter-app/archive/refs/tags/"
-const TEMPLATE_TAG: string = "v0.3.0"
+const TEMPLATE_TAG: string = "v0.4.6"
 
 // Skitter's activity, which is the same class in every project. That is what makes it possible to
 // work out the component name to launch from the application id alone.
@@ -354,8 +354,8 @@ private keygen()
         Err(e) -> die("the key is made, but " + props + " could not be written: " + e.message())
         Ok(_) -> ()
 
-    set_permissions(props, 0o600)
-    set_permissions(store, 0o600)
+    _ = set_permissions(props, 0o600)
+    _ = set_permissions(store, 0o600)
 
     prints("skitter: a release key is in " + store + ",\n")
     prints("         described by " + props + ".\n\n")
@@ -445,11 +445,11 @@ private remove_tree(path: string)
             for name in names.view()
                 val child = path + "/" + name
 
-                if is_dir(child) then remove_tree(child) else remove_file(child)
+                if is_dir(child) then remove_tree(child) else _ = remove_file(child)
 
         Err(_) -> return
 
-    remove_dir(path)
+    _ = remove_dir(path)
 end remove_tree
 
 /** What `sysl build-c` leaves beside a program: the archive CMake links and its C header. */
@@ -458,7 +458,7 @@ private remove_artifacts(dir: string)
         Ok(names) ->
             for name in names.view()
                 if name.ends_with(".a") || name.ends_with(".a.h")
-                    remove_file(dir + "/" + name)
+                    _ = remove_file(dir + "/" + name)
 
         Err(_) -> ()
 end remove_artifacts
@@ -472,7 +472,7 @@ end remove_artifacts
  * below are what actually gets the tree back to nothing.
  */
 private clean()
-    if exists("gradlew") then run("./gradlew", ["clean"], "", tooling())
+    if exists("gradlew") then _ = run("./gradlew", ["clean"], "", tooling())
 
     remove_tree("app/.cxx")
     remove_tree("app/build")
@@ -563,7 +563,7 @@ private write_readme(dir: string, name: string)
         Ok(_) -> ()
 
     // The template's screenshot is of the template's demo, so it goes with the template's README.
-    remove_file(dir + "/shot.png")
+    _ = remove_file(dir + "/shot.png")
 end write_readme
 
 private git_init(dir: string)
@@ -576,8 +576,8 @@ private git_init(dir: string)
 
         Ok(s) -> if !s.ok() then return
 
-    run("git", ["add", "-A"], dir)
-    run("git", ["commit", "-q", "-m", "A Skitter application"], dir)
+    _ = run("git", ["add", "-A"], dir)
+    _ = run("git", ["commit", "-q", "-m", "A Skitter application"], dir)
 end git_init
 
 private init(dir: string, id: string, name: string)
